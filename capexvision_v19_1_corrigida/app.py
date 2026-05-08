@@ -1,4 +1,5 @@
 
+import base64
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -7,8 +8,17 @@ import streamlit as st
 from datetime import datetime
 from io import BytesIO
 
+
+RISK_COLOR_MAP = {
+    "Crítico": "#E9494A",
+    "Alto": "#F28C28",
+    "Médio": "#F2C94C",
+    "Baixo": "#37C978"
+}
+RISK_ORDER = ["Crítico", "Alto", "Médio", "Baixo"]
+
 st.set_page_config(
-    page_title="CapexVision V17.8",
+    page_title="CapexVision V19.1",
     page_icon="💠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -149,7 +159,7 @@ button[kind="secondary"] {
 div[role="radiogroup"] label {padding: 9px 6px !important;border-radius: 10px !important;}
 div[role="radiogroup"] label:hover {background: rgba(25,110,255,.16) !important;}
 
-/* V17.3 correction: Plotly charts live inside native Streamlit bordered containers */
+/* V19 correction: Plotly charts live inside native Streamlit bordered containers */
 [data-testid="stVerticalBlockBorderWrapper"] {
     background: linear-gradient(135deg, rgba(13,31,53,.95), rgba(8,20,35,.96)) !important;
     border: 1px solid rgba(110,170,255,.18) !important;
@@ -227,8 +237,47 @@ div[role="radiogroup"] label:hover {background: rgba(25,110,255,.16) !important;
 }
 
 
+
+.floor-img {
+    position:relative;
+    height:270px;
+    border:1px solid rgba(255,255,255,.12);
+    border-radius:16px;
+    overflow:hidden;
+    background-size: cover;
+    background-position: center;
+    background-repeat:no-repeat;
+}
+.floor-img::before{
+    content:"";
+    position:absolute;
+    inset:0;
+    background:linear-gradient(135deg, rgba(3,10,20,.28), rgba(3,10,20,.52));
+    z-index:0;
+}
+.floor-empty-label{
+    position:absolute;
+    z-index:2;
+    left:50%;
+    top:50%;
+    transform:translate(-50%,-50%);
+    color:#B7C7DC;
+    text-align:center;
+    font-size:.78rem;
+    background:rgba(4,12,24,.65);
+    border:1px solid rgba(255,255,255,.12);
+    border-radius:12px;
+    padding:12px 16px;
+}
+
 </style>
 """, unsafe_allow_html=True)
+
+
+if "floorplan_bg" not in st.session_state:
+    st.session_state.floorplan_bg = None
+if "floorplan_name" not in st.session_state:
+    st.session_state.floorplan_name = None
 
 if "raw_data" not in st.session_state:
     st.session_state.raw_data = None
@@ -367,6 +416,42 @@ def build_summary(data):
     s["longitude"]=[coords[i%len(coords)][1] for i in range(len(s))]
     return s
 
+
+def add_risk_legend():
+    st.markdown(
+        """
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin:4px 0 10px 0;">
+            <div style="font-size:.76rem;color:#DCEBFF;"><span style="color:#E9494A;font-size:1rem;">●</span> Crítico</div>
+            <div style="font-size:.76rem;color:#DCEBFF;"><span style="color:#F28C28;font-size:1rem;">●</span> Alto</div>
+            <div style="font-size:.76rem;color:#DCEBFF;"><span style="color:#F2C94C;font-size:1rem;">●</span> Médio</div>
+            <div style="font-size:.76rem;color:#DCEBFF;"><span style="color:#37C978;font-size:1rem;">●</span> Baixo</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+def prepare_gantt_data(df):
+    gantt = df.copy()
+    if "data_inicio_planejada" in gantt.columns:
+        gantt["Inicio"] = pd.to_datetime(gantt["data_inicio_planejada"], errors="coerce")
+    else:
+        gantt["Inicio"] = pd.NaT
+    if "data_fim_planejada" in gantt.columns:
+        gantt["Fim"] = pd.to_datetime(gantt["data_fim_planejada"], errors="coerce")
+    else:
+        gantt["Fim"] = pd.NaT
+
+    base_date = pd.Timestamp("2024-01-01")
+    fallback_start = pd.Series([base_date + pd.Timedelta(days=int(i * 7)) for i in range(len(gantt))], index=gantt.index)
+    gantt["Inicio"] = gantt["Inicio"].fillna(fallback_start)
+    gantt["Fim"] = gantt["Fim"].fillna(gantt["Inicio"] + pd.to_timedelta(45 + (gantt.index % 90), unit="D"))
+
+    gantt["Projeto"] = gantt["elemento_pep"].astype(str)
+    gantt["Risco"] = gantt["risk"].astype(str)
+    gantt["Avanço Planejado"] = gantt["avanco_planejado_pct"].fillna(0).round(1)
+    gantt["Avanço Real"] = gantt["avanco_real_pct"].fillna(0).round(1)
+    return gantt.sort_values(["Risco", "Inicio"]).head(40)
+
 def kpi(title,value,sub,icon,cls):
     st.markdown(f'<div class="kpi {cls}"><div class="kpi-title">{title}</div><div class="kpi-value">{value}</div><div class="kpi-sub">{sub}</div><div class="kpi-icon">{icon}</div></div>',unsafe_allow_html=True)
 
@@ -413,15 +498,41 @@ def donut(s):
     return fig
 
 def floor(s):
-    top=s.sort_values("orcamento_aprovado_total",ascending=False).head(5).reset_index(drop=True)
-    spots=[(25,64),(47,38),(72,29),(80,62),(35,23)]
-    html='<div class="floor"><div class="zone" style="left:8%;top:13%;width:30%;height:26%;"></div><div class="zone" style="left:43%;top:13%;width:24%;height:26%;"></div><div class="zone" style="left:70%;top:13%;width:20%;height:26%;"></div><div class="zone" style="left:8%;top:46%;width:36%;height:32%;"></div><div class="zone" style="left:49%;top:46%;width:41%;height:32%;"></div>'
-    for i,r in top.iterrows():
-        x,y=spots[i]
-        o="o" if r.risk in ["Crítico","Alto"] else ""
-        html+=f'<div class="hot {o}" style="left:{x}%;top:{y}%;"></div><div class="call {o}" style="left:{min(x+4,74)}%;top:{max(y-12,6)}%;"><b>{r.elemento_pep}</b><br>Orçado: {fmt(r.orcamento_aprovado_total)}<br>Realizado: {fmt(r.realizado)}<br>{r.consumo_pct:.1%}</div>'
-    return html+"</div>"
+    top = s.sort_values("orcamento_aprovado_total", ascending=False).head(8).reset_index(drop=True)
+    spots = [(18,68),(32,42),(48,30),(64,58),(78,36),(24,22),(54,72),(84,66)]
+    bg = st.session_state.get("floorplan_bg")
 
+    if bg:
+        html = f'<div class="floor-img" style="background-image:url({bg});">'
+    else:
+        html = """
+        <div class="floor">
+            <div class="zone" style="left:8%;top:13%;width:30%;height:26%;"></div>
+            <div class="zone" style="left:43%;top:13%;width:24%;height:26%;"></div>
+            <div class="zone" style="left:70%;top:13%;width:20%;height:26%;"></div>
+            <div class="zone" style="left:8%;top:46%;width:36%;height:32%;"></div>
+            <div class="zone" style="left:49%;top:46%;width:41%;height:32%;"></div>
+            <div class="floor-empty-label">
+                Nenhuma imagem de planta carregada<br>
+                Use a barra lateral para enviar uma planta da unidade.
+            </div>
+        """
+
+    for i, r in top.iterrows():
+        x, y = spots[i % len(spots)]
+        o = "o" if str(r.get("risk", "")) in ["Crítico", "Alto"] else ""
+        pep = str(r.get("elemento_pep", "Projeto"))
+        html += f"""
+        <div class="hot {o}" style="left:{x}%;top:{y}%;z-index:3;"></div>
+        <div class="call {o}" style="left:{min(x+4,74)}%;top:{max(y-12,6)}%;z-index:4;">
+            <b>{pep}</b><br>
+            Orçado: {fmt(r.get("orcamento_aprovado_total", 0))}<br>
+            Realizado: {fmt(r.get("realizado", 0))}<br>
+            Consumo: {float(r.get("consumo_pct", 0)):.1%}
+        </div>
+        """
+    html += "</div>"
+    return html
 
 def top_table_html(df):
     top = df.copy()
@@ -585,6 +696,26 @@ menu = st.sidebar.radio(
     label_visibility="collapsed"
 )
 
+
+st.sidebar.markdown("### Planta da unidade")
+floor_upload = st.sidebar.file_uploader(
+    "Upload planta da unidade",
+    type=["png", "jpg", "jpeg"],
+    key="floorplan_upload"
+)
+
+if floor_upload is not None:
+    img_bytes = floor_upload.getvalue()
+    mime = floor_upload.type or "image/png"
+    st.session_state.floorplan_bg = f"data:{mime};base64,{base64.b64encode(img_bytes).decode()}"
+    st.session_state.floorplan_name = floor_upload.name
+    st.sidebar.success(f"Planta carregada: {floor_upload.name}")
+
+if st.sidebar.button("Remover planta da unidade", use_container_width=True):
+    st.session_state.floorplan_bg = None
+    st.session_state.floorplan_name = None
+
+
 st.sidebar.markdown("### Carga de dados")
 load_mode = st.sidebar.radio("Modo", ["Substituir base", "Acrescentar evitando duplicados"])
 uploaded=st.sidebar.file_uploader("Enviar Excel",type=["xlsx"])
@@ -605,7 +736,7 @@ st.sidebar.markdown("""
 <div class="footer-brand">
 💠 <b>CAPEXVISION</b><br>
 Inteligência para seus investimentos<br><br>
-🟢 Versão 17.8.0
+🟢 Versão 19.1.0
 </div>
 """, unsafe_allow_html=True)
 
@@ -700,7 +831,8 @@ def render_visual_overview():
     with r2c1:
         with st.container(border=True):
             st.markdown('<div class="ptitle">MAPA DE LOCALIZAÇÕES</div><div class="psub">Orçado vs realizado por localização geográfica</div>',unsafe_allow_html=True)
-            fig=px.scatter_mapbox(df,lat="latitude",lon="longitude",size="orcamento_aprovado_total",color="risk",hover_name="elemento_pep",zoom=3,height=270,color_discrete_map={"Crítico":"#FF4D4F","Alto":"#FFB020","Médio":"#66D94F","Baixo":"#3AA7FF"})
+            add_risk_legend()
+            fig=px.scatter_mapbox(df,lat="latitude",lon="longitude",size="orcamento_aprovado_total",color="risk",hover_name="elemento_pep",zoom=3,height=270,color_discrete_map=RISK_COLOR_MAP)
             fig.update_layout(mapbox_style="carto-darkmatter",margin=dict(l=0,r=0,t=0,b=0),paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
     with r2c2:
@@ -770,21 +902,76 @@ elif menu == "◈ Análise Financeira":
     with c2:
         with st.container(border=True):
             st.markdown('<div class="ptitle">Top desvios financeiros</div>', unsafe_allow_html=True)
+            add_risk_legend()
             top=df.sort_values("VAC").head(15)
-            fig=px.bar(top,x="VAC",y="elemento_pep",orientation="h",height=450,color="risk")
+            fig=px.bar(top, x="VAC", y="elemento_pep", orientation="h", height=450, color="risk", color_discrete_map=RISK_COLOR_MAP, category_orders={"risk": RISK_ORDER})
             fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",font_color="#EAF2FF", margin=dict(l=20,r=20,t=20,b=20))
             st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
 elif menu == "◷ Atrasos e Prazos":
-    st.markdown('<div class="story"><b>Leitura de prazo:</b> Projetos com SPI menor que 1,0 estão entregando menos avanço físico do que o planejado.</div>', unsafe_allow_html=True)
-    top=df.sort_values("SPI").head(20)
-    fig=px.bar(top,x="SPI",y="elemento_pep",orientation="h",color="risk",height=560)
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",font_color="#EAF2FF")
-    st.plotly_chart(fig,use_container_width=True)
-    st.dataframe(df[["empresa","definicao_projeto","elemento_pep","avanco_planejado_pct","avanco_real_pct","SPI","risk"]], use_container_width=True, hide_index=True)
+    st.markdown(
+        '<div class="story"><b>Leitura de prazo:</b> O Gantt mostra a janela planejada de execução. A cor representa a classe de risco e os filtros globais continuam afetando a visualização.</div>',
+        unsafe_allow_html=True
+    )
+
+    with st.container(border=True):
+        st.markdown('<div class="ptitle">GANTT DE PROJETOS — PRAZO E RISCO</div><div class="psub">Barra = duração planejada · Cor = risco do projeto · Hover = avanço físico e indicadores.</div>', unsafe_allow_html=True)
+        add_risk_legend()
+
+        gantt = prepare_gantt_data(df)
+
+        fig = px.timeline(
+            gantt,
+            x_start="Inicio",
+            x_end="Fim",
+            y="Projeto",
+            color="Risco",
+            color_discrete_map=RISK_COLOR_MAP,
+            category_orders={"Risco": RISK_ORDER},
+            hover_data={
+                "Avanço Planejado": True,
+                "Avanço Real": True,
+                "orcamento_aprovado_total": ":,.0f",
+                "realizado": ":,.0f",
+                "CPI": ":.2f",
+                "SPI": ":.2f",
+                "Inicio": True,
+                "Fim": True
+            },
+            height=620
+        )
+
+        fig.update_yaxes(autorange="reversed", title="")
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font_color="#EAF2FF",
+            legend_title_text="Classe de risco",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                bgcolor="rgba(0,0,0,0)"
+            ),
+            margin=dict(l=10, r=10, t=60, b=20),
+            xaxis_title="Período planejado"
+        )
+
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    with st.container(border=True):
+        st.markdown('<div class="ptitle">DETALHE DE PRAZO E AVANÇO</div>', unsafe_allow_html=True)
+        detail_cols = ["empresa", "definicao_projeto", "elemento_pep", "avanco_planejado_pct", "avanco_real_pct", "SPI", "risk", "prob_atraso"]
+        available = [c for c in detail_cols if c in df.columns]
+        st.dataframe(df[available].sort_values("SPI"), use_container_width=True, hide_index=True)
+
+
 elif menu == "⌖ Mapa de Localizações":
     with st.container(border=True):
         st.markdown('<div class="ptitle">MAPA DE LOCALIZAÇÕES</div><div class="psub">Tamanho = orçamento; cor = risco.</div>', unsafe_allow_html=True)
-        fig=px.scatter_mapbox(df,lat="latitude",lon="longitude",size="orcamento_aprovado_total",color="risk",hover_name="elemento_pep",hover_data=["realizado","EAC","health_score"],zoom=3,height=680,color_discrete_map={"Crítico":"#FF4D4F","Alto":"#FFB020","Médio":"#66D94F","Baixo":"#3AA7FF"})
+        add_risk_legend()
+        fig=px.scatter_mapbox(df,lat="latitude",lon="longitude",size="orcamento_aprovado_total",color="risk",hover_name="elemento_pep",hover_data=["realizado","EAC","health_score"],zoom=3,height=680,color_discrete_map=RISK_COLOR_MAP)
         fig.update_layout(mapbox_style="carto-darkmatter",margin=dict(l=0,r=0,t=0,b=0),paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
 elif menu == "▥ Planta da Unidade":
@@ -830,6 +1017,10 @@ elif menu == "⚙ Configurações":
     st.markdown('<div class="panel"><div class="ptitle">CONFIGURAÇÕES E GOVERNANÇA</div>', unsafe_allow_html=True)
     st.write("Base carregada:", "Sim" if st.session_state.raw_data is not None else "Dados demonstrativos")
     st.write("Registros no log:", len(st.session_state.load_log))
+    st.write(
+        "Imagem da planta carregada:",
+        st.session_state.floorplan_name if st.session_state.floorplan_name else "Nenhuma"
+    )
     st.dataframe(pd.DataFrame(st.session_state.load_log), use_container_width=True)
-    st.download_button("Baixar análise consolidada em Excel", export_excel(df), file_name="capexvision_v17_8_analise.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("Baixar análise consolidada em Excel", export_excel(df), file_name="capexvision_v19_1_analise.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.markdown('</div>', unsafe_allow_html=True)
