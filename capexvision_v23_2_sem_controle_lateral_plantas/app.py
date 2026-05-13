@@ -43,7 +43,7 @@ STATUS_COLOR_MAP = {
 }
 
 st.set_page_config(
-    page_title="CapexVision V23.1.1",
+    page_title="CapexVision V23.2.1",
     page_icon="💠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1223,42 +1223,6 @@ menu = st.sidebar.radio(
 
 
 
-st.sidebar.markdown("### Plantas por unidade")
-
-manual_units_text = st.sidebar.text_input(
-    "Unidades cadastradas",
-    value="Área 01;Área 02;Área 03;Área 04",
-    help="Separe por ponto e vírgula. Depois vincule uma imagem para cada unidade."
-)
-
-available_units_sidebar = [u.strip() for u in manual_units_text.split(";") if u.strip()]
-
-if available_units_sidebar:
-    unit_for_image = st.sidebar.selectbox(
-        "Unidade para vincular imagem",
-        available_units_sidebar,
-        key="unit_for_floorplan_image"
-    )
-
-    floor_upload = st.sidebar.file_uploader(
-        "Upload da planta da unidade",
-        type=["png", "jpg", "jpeg"],
-        key=f"floorplan_upload_{unit_for_image}"
-    )
-
-    if floor_upload is not None:
-        st.session_state.floorplan_images[unit_for_image] = image_to_data_url(floor_upload)
-        st.session_state.floorplan_names[unit_for_image] = floor_upload.name
-        st.sidebar.success(f"Imagem vinculada: {unit_for_image}")
-
-    if unit_for_image in st.session_state.floorplan_names:
-        st.sidebar.caption(f"Imagem atual: {st.session_state.floorplan_names[unit_for_image]}")
-
-    if st.sidebar.button("Remover imagem desta unidade", use_container_width=True):
-        st.session_state.floorplan_images.pop(unit_for_image, None)
-        st.session_state.floorplan_names.pop(unit_for_image, None)
-        st.sidebar.success("Imagem removida.")
-
 
 st.sidebar.markdown("### Carga de dados")
 load_mode = st.sidebar.radio("Modo", ["Substituir base", "Acrescentar evitando duplicados"])
@@ -1280,7 +1244,7 @@ st.sidebar.markdown("""
 <div class="footer-brand">
 💠 <b>CAPEXVISION</b><br>
 Inteligência para seus investimentos<br><br>
-🟢 Versão 23.1.0
+🟢 Versão 23.2.0
 </div>
 """, unsafe_allow_html=True)
 
@@ -2235,5 +2199,5 @@ elif menu == "⚙ Configurações":
         )
     
     st.dataframe(pd.DataFrame(st.session_state.load_log), use_container_width=True)
-    st.download_button("Baixar análise consolidada em Excel", export_excel(df), file_name="capexvision_v23_1_analise.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("Baixar análise consolidada em Excel", export_excel(df), file_name="capexvision_v23_2_analise.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.markdown('</div>', unsafe_allow_html=True)
